@@ -1,0 +1,469 @@
+= Node's Streams
+ifdef::env-github[]
+:tip-caption: :bulb:
+:note-caption: :bookmark:
+:important-caption: :boom:
+:caution-caption: :fire:
+:warning-caption: :warning:
+endif::[]
+
+[quote, me ( -_0 )]
+_Best way to understand something is to write about that thing a book._
+
+= Streams
+
+First of all streams it's about way to handle reading/writing files ( with use of `'fs'` module ), network communications ( `"http"` module ), or any kind of end-to-end information exchange in an efficient way.
+
+There are four fundamentals stream types within Node.js: 
+
+* `Writable`: streams to which data can be written (for example, `fs.createWriteStream()`).
+* `Readable`: streams from which data can be read (for example, `fs.createReadStream()`).
+* `Duplex`: streams that are both Readable and Writable (for example, `net.Socket`).
+* `Transform`: Duplex streams that can modify or transform the data as it is written and read (for example, `zlib.createDeflate()`).
+ 
+As many modules in node streams contains events (event chapter link). So to start read stream, change their state to "flow mode" (by default all Readable streams is paused) we need use  one of this events/method: `'data'`, `'readable' (readable.read())`, `Readable.pipe(Writable)`.
+
+We are gonna start with text streams.
+
+== Readable stream
+
+
+Readable stream used for read data from source.
+
+First of all you need to create file named *'example.txt'*. And fill it with any text. We will try to read it.
+
+[source, js]
+----
+import fs from 'fs';
+
+const rs = fs.createReadStream('example.txt')
+
+rs.on('data', (chunk) => {
+  console.log(`Received ${chunk.length} bytes of data.`);
+});
+
+rs.on('readable', () => {
+
+  let chunk;
+
+  console.log('Stream is readable (new data received in buffer)');
+  while (null !== (chunk = rs.read())) {
+    console.log(`Read ${chunk.length} bytes of data...`);
+  }
+
+});
+
+const ws = fs.createWriteStream('ws_test.txt');
+
+rs.pipe(ws)
+----
+
+====
+
+[start=1]
+.  Import `'fs'` module from `'node:modules'`;
+.  Create variable named rs(_readable stream_) with `fs.createReadStream()` method;
+.. Handle `'data'` event of rs, read first `chunk.length` of rs;
+.. Handle `'readable'` event of rs, read all available chunks of rs;
+... The `rs.read()` method reads data out of the internal buffer and returns it.
+.  Create variable named ws(_writable stream_) with `fs.createWriteStream()` method;
+.. pipe rs to ws(_The `readable.pipe()` method attaches a Writable stream to the readable_)
+
+====
+
+By default `'readable'` event has `readable.readableFlowing === false`(_read below_), so to change "flow mode" and get data `readable.read()` must be provided.
+The `readable.read()` method should only be called on Readable streams operating in "paused mode". In "flow mode", `readable.read()` is called automatically (like on `'data'` event of readable stream) until the internal buffer is fully drained(`'drain'` event, read below ).
+
+==== Some important stuff about streams reading:
+
+* Streams read chunks of data piece by piece, processing its content without keeping it all in memory.
+* The listener callback will be passed the chunk of data as a string if a default encoding has been specified for the stream using the readable.setEncoding() method or on createReadStream options;
+
+[source, js]
+----
+import fs from 'fs';
+
+// write encoding while creating stream
+const rs = fs.createReadStream('example.txt','utf-8');
+
+// or with setEncoding() method
+rs.setEncoding('utf-8');
+
+rs.on('data', (string_chunk) => {
+    console.log('data returned as string');
+    console.log(string_chunk)
+})
+----
+
+* Otherwise by default the data will be passed as a `Buffer`.
+[source, js]
+----
+import fs from 'fs';
+
+const rs = fs.createReadStream('example.txt');
+
+rs.on('data', (buffer_chunk) => {
+    console.log('data returned as buffer');
+    console.log(buffer_chunk)
+})
+----
+
+
+* The Readable stream API evolved across multiple Node.js versions and provides multiple methods of consuming stream data. nIn general, developers should choose one of the methods of consuming data and should never use multiple methods to consume data from a single stream. Specifically, using a combination of `on('data')`, `on('readable')`, `pipe()`, or `async iterators` could lead to *unintuitive behavior*.
+
+
+=== Readable stream has 3 states of reading data:
+
+[source, js]
+----
+ readable.readableFlowing === null
+ readable.readableFlowing === false
+ readable.readableFlowing === true
+----
+
+
+* `null` - no mechanism for consuming the stream's data is provided. Therefore, the stream will not generate data. 
+Attaching a listener for the 'data' event, calling the `readable.pipe()` method, or calling the `readable.resume()` method will switch `readable.readableFlowing` to `true`.
+
+* `true` - stream begin actively emitting events as data is generated (default state).
+Calling `readable.pause()`, `readable.unpipe()`, or receiving *backpressure* will cause the `readable.readableFlowing` to be set as `false`.
+
+* `false` - temporarily halting the flowing of events but not halting the generation of data, data may be accumulating within the stream's internal buffers.
+Calling `readable.resume()`  will cause the `readable.readableFlowing` to be set as `true`.
+
+[source, js]
+----
+import fs from 'fs';
+const rs = fs.createReadStream('example.txt'); 
+
+rs.on('data', (chunk) => {
+  console.log(`Received ${chunk.length} bytes of data.`);
+  rs.pause();
+  console.log('There will be no additional data for 1 second.');
+  setTimeout(() => {
+    console.log('Now data will start flowing again.');
+    rs.resume();
+  }, 1000);
+});
+----
+
+
+
+Readable streams effectively operate in one of two modes: "flow" and "paused". These modes are separate from object mode. A Readable stream can be in object mode or not, regardless of whether it is in flowing mode or paused mode.
+
+In "flow mode", data is read from the underlying system automatically and provided to an application as quickly as possible using events via the `EventEmitter` interface.(like in `'data'` event callback or `rs.pipe(ws)`);
+
+In "paused mode", the `stream.read()` method must be called explicitly to read chunks of data from the stream.( like in `'readable'` event callback )
+
+=== Events of readable stream:
+[start=1]
+. The `'close'` event is emitted when the stream and any of its underlying resources (a file descriptor, for example) have been closed. The event indicates that no more events will be emitted, and no further computation will occur.
+A Readable stream will always emit the 'close' event if it is created with the emitClose option.
+. The `'end'` event is emitted when there is no more data to be consumed from the stream.
+	The `'end'` event will not be emitted unless the data is completely consumed.
+
+[source, js]
+----
+import fs from 'fs';
+const rs = fs.createReadStream('example.txt'); 
+
+// add here 'data' event handler from last code example
+
+rs.pause()
+rs.resume()
+
+rs.on('close',() => {
+  console.log('stream closed');
+})
+
+rs.on('end',() => {
+  console.log('stream ended');
+})
+
+rs.on('error', (err_obj) => {
+  console.log(`Error is occured:${err_obj}` )
+})
+
+rs.on('pause',() => {
+  console.log(`stream paused and readableFlowing === ${rs.readableFlowing}`);
+})
+
+rs.on('resume',() => {
+  console.log(`stream resumed and readableFlowing === ${rs.readableFlowing}`);
+})
+----
+
+====
+[start=1]
+. `'data'` event emit `'resume'` event;
+. Received data;
+. `rs.pause()` emit `'pause'` event
+. `rs.resume()` emit `'resume'` event
+. Emit `'end'` event;
+. Emit `'close'` event;
+====
+Also you can destroy stream with `rs.destroy()` that emit an `'error'` and `'close'` event;
+
+=== rs.pipe(ws); 
+
+The `readable.pipe()` method attaches a Writable stream to the readable, causing it to switch automatically into flowing mode and push all of its data to the attached Writable. The flow of data will be automatically managed so that the destination Writable stream is not overwhelmed by a faster Readable stream.
+
+*Important thing of understanding `rs.pipe(ws)`, backpressing problem*:
+https://nodejs.org/en/docs/guides/backpressuring-in-streams/
+
+=== Basic piping 
+
+[source, js]
+----
+const rs = fs.createReadStream('rs_test.txt')
+const ws = fs.createWriteStream('ws_test.txt.');
+
+rs.pipe(ws);
+----
+====
+[start=1]
+. `fs.createReadStream()` read data from 'rs_test.txt';
+. Pipe( transfer ) rs data to ws;
+. ws write received data to 'ws_test.txt';
+====
+=== Create gzipped file
+
+[source, js]
+----
+const rs = fs.createReadStream('rs_test.txt')/*
+const gzip = zlib.createGzip();
+const ws = fs.createWriteStream('file.txt.gz');
+
+rs.pipe(gzip).pipe(ws);
+----
+====
+[start=1]
+. first pipe provide data from rs to gzip, that makes it gzipped ;
+. second pipe provide gzipped data to ws;
+====
+
+
+==== Close stream after 1 second of piping data
+
+[source, js]
+----
+rs.pipe(ws);
+setTimeout(() => {
+  console.log('Stop writing to file.txt.');
+  rs.unpipe(ws);
+  console.log('Manually close the file stream.');
+  ws.end();
+}, 1000);
+----
+
+
+
+
+== Writable Stream
+
+=== writable.cork() and .uncork()
+
+The `writable.cork()` method forces all written data to be buffered in memory. The buffered data will be flushed when either the `stream.uncork()` or `stream.end()` methods are called.
+The writable.uncork() method flushes all data buffered since `stream.cork()` was called.
+
+[source, js]
+----
+ws.cork();
+ws.write('some ');
+ws.write('data ');
+process.nextTick(() => ws.uncork());
+----
+=== ws.write()
+
+The `ws.write()` method writes some data to the stream, and calls the supplied callback once the data has been fully handled. If an error occurs, the callback will be called with the error as its first argument. The callback is called asynchronously and before 'error' is emitted.
+
+=== ws.end()
+
+Calling the `ws.end()` method signals that no more data will be written to the `Writable`. 
+
+[source, js]
+----
+// Write 'hello, ' and then end with 'world!'.
+const fs = require('node:fs');
+const file = fs.createWriteStream('example.txt');
+file.write('hello, ');
+file.end('world!');
+// Writing more now is not allowed!
+----
+
+=== Events of writable stream:
+[start=1]
+. The `'finish'` event is emitted after stream.end() is called and all chunks have been processed by `stream._transform()`. In the case of an error, `'finish'` should not be emitted.
+. If a call to `stream.write(chunk)` returns `false`, the `'drain'` event will be emitted when it is appropriate to resume writing data to the stream.
+
+[source, js]
+----
+import fs from 'fs';
+const ws = fs.createWriteStream('example.txt'); 
+const rs = fs.createReadStream('rs_test.txt')
+
+// add here 'data' event handler from last code example
+
+function write(data, cb) {
+  if (!stream.write(data)) {
+    stream.once('drain', cb);
+  } else {
+    process.nextTick(cb);
+  }
+}
+
+// Wait for cb to be called before doing any other write.
+write('hello', () => {
+  console.log('Write completed, do more writes now.');
+});
+
+rs.pipe(ws)
+
+ws.on('close',() => {
+  console.log('stream closed');
+})
+
+ws.on('finish',() => {
+  console.log('stream finished');
+})
+
+ws.on('error', (err_obj) => {
+  console.log(`Error is occured:${err_obj}` )
+})
+
+ws.on('pipe',() => {
+  console.log('stream piped');
+})
+
+ws.on('unpipe',() => {
+  console.log('stream unpiped');
+})
+----
+
+=== stream.pipeline();
+
+One important caveat of `rs.pipe()` is that if the Readable stream emits an error during processing, the Writable destination is not closed automatically. If an error occurs, it will be necessary to manually close each stream in order to prevent memory leaks.
+
+The process.stderr and process.stdout Writable streams are never closed until the Node.js process exits, regardless of the specified options.
+
+Therefore, stream.pipeline() preferable to use against `rs.pipe()`.
+
+[source, js]
+----
+import { pipeline } from 'stream/promises';
+import fs from 'fs';
+import zlib from 'zlib';
+
+const gzipFile = async () => {
+  await pipeline(
+    fs.createReadStream('example.txt'),
+    zlib.createGzip(),
+    fs.createWriteStream('archive.txt.gz'),
+  );
+  console.log('Pipeline succeeded.');
+}
+
+const unzipFile = async () => {
+  const rs = fs.createReadStream('archive.txt.gz');
+  rs.on('data', (chunk) => {
+    zlib.unzip(chunk, (err, res) => {
+      console.log(res.toString())
+    })
+  })
+}
+
+gzipFile().then(() => {
+  unzipFile()
+}).catch(console.error);
+----
+
+
+=== stream.Readable.from(iterable);
+
+[source, js]
+----
+A utility method for creating readable streams out of iterators.
+
+import { Readable } from 'stream';
+
+async function * generate() {
+  yield 'hello';
+  yield 'streams';
+}
+
+const readable = Readable.from(generate());
+
+readable.on('data', (chunk) => {
+  console.log(chunk);
+});
+
+----
+
+=== stream.finished(iterable);
+
+A function to get notified when a stream is no longer readable, writable or has experienced an error or a premature close event.
+
+[source, js]
+----
+import { finished } from 'stream';
+const fs = require('node:fs');
+
+const rs = fs.createReadStream('archive.tar');
+
+finished(rs, (err) => {
+  if (err) {
+    console.error('Stream failed.', err);
+  } else {
+    console.log('Stream is done reading.');
+  }
+});
+
+rs.resume(); // Drain the stream.
+
+----
+
+== Examples:
+
+=== Write iterable to text file
+
+[source, js]
+----
+import * as stream from 'stream';
+import * as fs from 'fs';
+import {once} from 'events';
+import { finished } from 'stream/promises';
+
+async function writeIterableToFile(iterable, filePath) {
+  const writable = fs.createWriteStream(filePath, {encoding: 'utf8'});
+  for await (const chunk of iterable) {
+    if (!writable.write(chunk)) { // (B)
+      // Handle backpressure
+      await once(writable, 'drain');
+    }
+  }
+  writable.end(); // (C)
+  // Wait until done. Throws if there are errors.
+  await finished(writable);
+}
+
+await writeIterableToFile(
+  ['One', ' line of text.\n'], 'tmp/log.txt');
+----
+
+
+
+[source, js]
+----
+import * as stream from 'stream';
+import * as fs from 'fs';
+import { pipeline } from 'stream/promises';
+
+async function writeIterableToFile(iterable, filePath) {
+  const readable = stream.Readable.from(
+    iterable, {encoding: 'utf8'});
+  const writable = fs.createWriteStream(filePath);
+  await pipeline(readable, writable); // (A)
+}
+await writeIterableToFile(
+  ['One', ' line of text.\n'], 'tmp/log.txt');
+----
