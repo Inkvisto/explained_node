@@ -1,0 +1,533 @@
+= Node.js Event Loop and libuv 
+ifdef::env-github[]
+:tip-caption: :bulb:
+:note-caption: :bookmark:
+:important-caption: :boom:
+:caution-caption: :fire:
+:warning-caption: :warning:
+endif::[]
+
+A typical Node.js app is basically a collection of callbacks that are executed in reaction to various events: an incoming connection, I/O completion, timeout expiry, Promise resolution, etc. There is a single main thread (a.k.a the Event-Loop) that executes all these callbacks, and thus the callbacks should be quick to complete as all other pending callbacks are waiting for their turn.
+
+
+=== Diagram of event loop:
+----
+   ┌───────────────────────────┐
+┌─>│           timers          │
+│  └─────────────┬─────────────┘
+│  ┌─────────────┴─────────────┐
+│  │     pending callbacks     │
+│  └─────────────┬─────────────┘
+│  ┌─────────────┴─────────────┐
+│  │       idle, prepare       │
+│  └─────────────┬─────────────┘      ┌───────────────┐
+│  ┌─────────────┴─────────────┐      │   incoming:   │
+│  │           poll            │<─────┤  connections, │
+│  └─────────────┬─────────────┘      │   data, etc.  │
+│  ┌─────────────┴─────────────┐      └───────────────┘
+│  │           check           │
+│  └─────────────┬─────────────┘
+│  ┌─────────────┴─────────────┐
+└──┤      close callbacks      │
+   └───────────────────────────┘
+----
+
+=== Short description of event loop
+====
+. *timers*: this phase executes callbacks scheduled by `setTimeout()` and `setInterval()`.
+. *pending callbacks*: executes I/O callbacks deferred to the next loop iteration.
+. *idle, prepare*: only used internally.
+. *poll*: retrieve new I/O events; execute I/O related callbacks (almost all with the exception of close callbacks, the ones scheduled by timers, and `setImmediate()`); node will block here when appropriate.
+. *check*: `setImmediate()` callbacks are invoked here.
+. *close callbacks*: some close callbacks, e.g. socket.on('close', ...).
+====
+
+== Example
+
+[source, js]
+----
+import fs from 'fs';
+import { fileURLToPath } from 'url'
+
+console.log('sync code');
+Promise.resolve()
+  .then(() => console.log('Promise.resolve1'));
+process.nextTick(() => console.log('process.nextTick1'));
+setImmediate(() => console.log('immediate1'));
+setTimeout(() => console.log('timeout1'));
+const __filename = fileURLToPath(import.meta.url);
+
+const rs = fs.createReadStream(__filename); 
+
+
+rs.on('data',()=> {
+  console.log('readFile');
+
+  setTimeout(() => console.log('timeout2'));
+  setImmediate(() => console.log('immediate2'));
+  Promise.resolve()
+    .then(() => console.log('Promise.resolve2'));
+  process.nextTick(() => console.log('process.nextTick2'));
+})
+
+rs.on('end',() => {
+  console.log('close event');
+})
+----
+
+=== Output
+|===
+| sync code			 | start of loop (pending callbacks)
+| Promise.resolve1   | pending callbacks
+| process.nextTick1  | fires immediately on the same phase (pending callbacks)
+| immediate1 		 | fires on the following iteration or 'tick' of the event loop (check)
+| timeout1 		 	 | start of second loop (timers)
+| readFile 			 | call pending callbacks
+| process.nextTick2  | fires immediately on the same phase (pending callbacks)
+| Promise.resolve2   | pending callbacks
+| immediate2		 | fires on the following iteration or 'tick' of the event loop (check)
+| close event        | close callbacks
+| timeout2			 | start of third loop (timers)
+|===
+
+==== More complicated example:
+[source, js]
+----
+'use strict';  
+console.log(1);  // 1
+setTimeout(() => {  
+    console.log(2)  //6
+    new Promise((resolve) => { 
+        console.log(6);  // 7
+        resolve(7);
+    }).then((num) => { 
+        console.log(num);  // 8
+    })
+    setTimeout(()=>{  // timers
+        console.log(13);  // 12
+    })
+});
+setTimeout(() => {  
+    console.log(3);  // 9
+    new Promise((resolve) => {
+        console.log(9);  // 10
+        resolve(10);
+    }).then((num) => { 
+        console.log(num);  // 11
+    })
+    setTimeout(()=>{  // timers
+        console.log(8);  // 13
+    })
+})
+new Promise((resolve) => {
+    console.log(4);  // 2
+    resolve(5)
+}).then((num) => { 
+    console.log(num);  // 3
+    new Promise((resolve)=>{ 
+        console.log(11);  // 4
+        resolve(12);
+    }).then((num)=>{ 
+        console.log(num);  // 5
+    })
+})
+
+----
+Output: 1，4，5，11，12，2，6，7，3，9，10，8
+
+
+== process.nextTick()
+
+Looking back at our diagram, any time you call `process.nextTick()` in a given phase, all callbacks passed to `process.nextTick()` will be resolved before the event loop continues. This can create some bad situations because it allows you to "starve" your I/O by making recursive `process.nextTick()` calls, which prevents the event loop from reaching the poll phase.
+
+
+
+[source, js]
+----
+ setTimeout(() => {
+     console.log('timer1')
+
+     Promise.resolve().then(function() {
+         console.log('promise1')
+     })
+ }, 0)
+
+for(let i = 0;i<5;i++){
+    process.nextTick(() => {
+        console.log('nextTick');
+    })
+}
+----
+
+From docs: #We recommend developers use `setImmediate()` in all cases because it's easier to reason about.#
+
+= `setImmediate()` vs `setTimeout()`
+
+
+`setImmediate()` and `setTimeout()` are similar, but behave in different ways depending on when they are called.
+
+`setImmediate()` is designed to execute a script once the current poll phase completes.
+`setTimeout()` schedules a script to be run after a minimum threshold in ms has elapsed.
+
+[source, js]
+----
+// fires on next loop (delay is always more or equal 1)
+setTimeout(() => {
+    console.log('timeout');
+}, 0)
+
+//fires on the following iteration or 'tick' of the event loop
+setImmediate(() => {
+    console.log('immediate')
+})
+----
+
+More info: https://nodejs.org/api/timers.html
+
+=== Useful links
+. https://nodejs.org/en/docs/guides/event-loop-timers-and-nexttick/
+. https://nodejs.org/en/docs/guides/timers-in-node/
+. https://nodejs.org/en/docs/guides/dont-block-the-event-loop/
+.. (examples link about block event loop and threads)
+. https://dou.ua/forums/topic/31698/
+. https://habr.com/ru/post/336498/
+
+
+= #(Advanced part)#
+
+=== Libuv and js 'phases' and code comparison
+
+
+image::https://github.com/zeeskhan1990/node-event-loop-thread-pool/raw/9a1c4e2a01551391b4efba0d15423c2a822f4284/media/b2cd1e7c6a3efad385ed38545ffa09be.jpg[600]
+
+=== The I/O loop
+
+The I/O (or event) loop is the central part (core) of libuv. It establishes the content for all I/O operations, and it’s meant to be tied to a single thread. One can run multiple event loops as long as each runs in a different thread. The libuv event loop (or any other API involving the loop or handles, for that matter) is not thread-safe except where stated otherwise.
+
+In order to better understand how the event loop operates, the following diagram illustrates all stages of a loop iteration:
+
+image::https://github.com/zeeskhan1990/node-event-loop-thread-pool/raw/9a1c4e2a01551391b4efba0d15423c2a822f4284/media/624c9768d8888b109a4649298c0cb091.png[600]
+
+. The loop concept of ‘now’ is updated. The event loop caches the current time at the start of the event loop tick in order to reduce the number of time-related system calls.
+
+. If the loop is alive an iteration is started, otherwise the loop will exit immediately. So, when is a loop considered to be alive? If a loop has active and ref’d handles, active requests or closing handles it’s considered to be alive.
+
+. Due timers are run. All active timers scheduled for a time before the loop’s concept of now get their callbacks called.
+
+. Pending callbacks are called. All I/O callbacks are called right after polling for I/O, for the most part. There are cases, however, in which calling such a callback is deferred for the next loop iteration. If the previous iteration deferred any I/O callback it will be run at this point.
+
+. Idle handle callbacks are called. Despite the unfortunate name, idle handles are run on every loop iteration, if they are active.
+
+. Prepare handle callbacks are called. Prepare handles get their callbacks called right before the loop will block for I/O.
+
+. Poll timeout is calculated. Before blocking for I/O the loop calculates for how long it should block. These are the rules when calculating the timeout:
+
+.. If the loop was run with the `UV_RUN_NOWAIT` flag, the timeout is 0.
+
+.. If the loop is going to be stopped (`uv_stop()` was called), the timeout is 0.
+
+.. If there are no active handles or requests, the timeout is 0.
+
+.. If there are any idle handles active, the timeout is 0.
+
+.. If there are any handles pending to be closed, the timeout is 0.
+
+.. If none of the above cases matches, the timeout of the closest timer is taken, or if there are no active timers, infinity.
+
+. The loop blocks for I/O. At this point the loop will block for I/O for the duration calculated in the previous step. All I/O related handles that were monitoring a given file descriptor for a read or write operation get their callbacks called at this point.
+
+. Check handle callbacks are called. Check handles get their callbacks called right after the loop has blocked for I/O. Check handles are essentially the counterpart of prepare handles.
+
+. Close callbacks are called. If a handle was closed by calling `uv_close()` it will get the close callback called.
+
+. Special case in case the loop was run with `UV_RUN_ONCE`, as it implies forward progress. It’s possible that no I/O callbacks were fired after blocking for I/O, but some time has passed so there might be timers which are due, those timers get their callbacks called.
+
+. Iteration ends. If the loop was run with `UV_RUN_NOWAIT` or `UV_RUN_ONCE` modes the iteration ends and `uv_run()` will return. If the loop was run with `UV_RUN_DEFAULT` it will continue from the start if it’s still alive, otherwise it will also end.
+
+Two things to keep in mind regarding setImmediate in the check phase of the loop :
+
+If the poll phase becomes idle and scripts have been queued with `setImmediate()`, the event loop may continue to the check phase rather than waiting.
+
+If an immediate timer is queued from inside an executing callback, that timer will not be triggered until the next event loop iteration
+
+=== Libuv uv_run (event loop main function).
+Node.js use libuv to implement event loop.
+Libuv is a multi-platform support library with a focus on asynchronous I/O.
+
+To understand the whole cycle of event loop we need to dig dipper.
+
+[source, c]
+----
+//1
+int uv_run(uv_loop_t* loop, uv_run_mode mode) {
+  int timeout;
+  int r;
+  int can_sleep;
+
+  //2
+  r = uv__loop_alive(loop);
+  if (!r)
+    uv__update_time(loop);
+
+  while (r != 0 && loop->stop_flag == 0) {
+    //3
+    uv__update_time(loop);
+    //4
+    uv__run_timers(loop);
+    
+     can_sleep =
+        QUEUE_EMPTY(&loop->pending_queue) && QUEUE_EMPTY(&loop->idle_handles);
+        
+        
+    //5
+    uv__run_pending(loop);
+    uv__run_idle(loop);
+    uv__run_prepare(loop);
+
+     timeout = 0;
+    if ((mode == UV_RUN_ONCE && can_sleep) || mode == UV_RUN_DEFAULT)
+    //6
+      timeout = uv__backend_timeout(loop);
+	
+    //7
+    uv__io_poll(loop, timeout);
+    //8
+    uv__run_check(loop);
+    //9
+    uv__run_closing_handles(loop);
+
+
+    r = uv__loop_alive(loop);
+
+  }
+
+  if (loop->stop_flag != 0)
+    loop->stop_flag = 0;
+
+  return r;
+}
+
+----
+
+. Runs the event loop. It will act differently depending on the specified mode:
+`UV_RUN_DEFAULT`: Runs the event loop until there are no more active and referenced handles or requests. Returns non-zero if `uv_stop()` was called and there are still active handles or requests. Returns zero in all other cases.
+`UV_RUN_ONCE`: Poll for i/o once. Note that this function blocks if there are no pending callbacks. Returns zero when done (no active handles or requests left), or non-zero if more callbacks are expected (meaning you should run the event loop again sometime in the future).
+`UV_RUN_NOWAIT`: Poll for i/o once but don’t block if there are no pending callbacks. Returns zero if done (no active handles or requests left), or non-zero if more callbacks are expected (meaning you should run the event loop again sometime in the future). `uv_run()` is not reentrant. It must not be called from a callback.
+. Check whether there are any referenced handlers [pending callbacks, idle/prepare handler, check handler, close handler] to be invoked, or any active operations pending
+. This will send a system call to get the current time and update the loop time (This is used to identify expired timers).
+. Run all expired timers.
+. Run all pending I/O callbacks. Pending callbacks are called. All I/O callbacks are called right after polling for I/O, for the most part. There are cases, however, in which calling such a callback is deferred for the next loop iteration. If the previous iteration deferred any I/O callback it will be run at this point. If the `pending_queue` is empty, this function will return 0. Otherwise, all callbacks in `pending_queue` will be executed, and the function will return 1.
+. Init timeout.
+. If the timeout value is zero, I/O polling will be skipped and the event loop will move onto check handlers (`setImmediate`) phase.
+. Run all check handlers (`setImmediate` callbacks will run here).
+. Run all close handlers.
+
+
+== 2.uv__loop_alive
+Checks if there are any active "handles" to be invoked,
+any active requests pending, any active close handles to be invoked.
+Broadly, `uv__has_active_handles` -> checks if there are open handles/file descriptors.
+A handle is an object that can do something while it is active. File descriptors includes
+descriptos for files, sockets, pipes, terminal, almost any I/O endpoint.
+`uv__has_active_reqs` -> checks if there are active I/O requests. 
+Requests represent short-lived operations. Requests can operate over handles.
+An example could be a write request operating over a file handle.
+[source, c]
+----
+static int uv__loop_alive(const uv_loop_t* loop) {
+  return uv__has_active_handles(loop) ||
+         uv__has_active_reqs(loop) ||
+         loop->closing_handles != NULL;
+}
+----
+
+
+
+
+== 4.uv__run_timers
+
+The event loop structure contains a so-called bunch of timers. The timer-start function pulls the timer handler with the shortest time from the heap and compares this value with the time the event loop ran. If the timer time is less, then this timer stops (it is removed from the heap, its handler is also removed from the heap). The next step is to check if it needs to be restarted.
+
+In Node.js (JavaScript) we have the setInterval and setTimeout functions, in libuv terms they are the same thing - a timer (uv_timer_t), with the only difference being that the interval timer has a repeat flag (repeat = 1).
+
+[source, c]
+----
+void uv__run_timers(uv_loop_t *loop)
+{
+  struct heap_node *heap_node;
+  uv_timer_t *handle;
+
+  for (;;)
+  {
+    heap_node = heap_min(timer_heap(loop));
+    if (heap_node == NULL)
+      break;
+
+    handle = container_of(heap_node, uv_timer_t, heap_node);
+    if (handle->timeout > loop->time)
+      break;
+
+    uv_timer_stop(handle);
+    uv_timer_again(handle);
+    handle->timer_cb(handle);
+  }
+}
+----
+
+
+== 5.uv__run_pending
+
+Calls are stored in a queue. These can be handlers for reading or writing a file, TCP or UDP connections, in general, any I / O operations.
+
+
+[source, c]
+----
+static void uv__run_pending(uv_loop_t* loop) {
+  QUEUE* q;
+  QUEUE pq;
+  uv__io_t* w;
+
+  QUEUE_MOVE(&loop->pending_queue, &pq);
+
+  while (!QUEUE_EMPTY(&pq)) {
+    q = QUEUE_HEAD(&pq);
+    QUEUE_REMOVE(q);
+    QUEUE_INIT(q);
+    w = QUEUE_DATA(q, uv__io_t, pending_queue);
+    w->cb(loop, w, POLLOUT);
+  }
+}
+----
+
+== 6.uv_backend_timeout
+
+The implementation's calculation of the execution time of an external I/O operation is similar to the function of starting timers, since the value of this time is calculated based on the nearest timer. By the way, this is how the non-blocking poll model is achieved.
+[source, c]
+----
+int uv_backend_timeout(const uv_loop_t* loop) {
+  if (loop->stop_flag != 0)
+    return 0;
+
+  if (!uv__has_active_handles(loop) && !uv__has_active_reqs(loop))
+    return 0;
+
+  if (!QUEUE_EMPTY(&loop->idle_handles))
+    return 0;
+
+  if (!QUEUE_EMPTY(&loop->pending_queue))
+    return 0;
+
+  if (loop->closing_handles)
+    return 0;
+
+  return uv__next_timeout(loop);
+}
+
+int uv__next_timeout(const uv_loop_t* loop) {
+  const struct heap_node* heap_node;
+  const uv_timer_t* handle;
+  uint64_t diff;
+
+  heap_node = heap_min(timer_heap(loop));
+  if (heap_node == NULL)
+    return -1; /* block indefinitely */
+
+  handle = container_of(heap_node, uv_timer_t, heap_node);
+  if (handle->timeout <= loop->time)
+    return 0;
+
+  diff = handle->timeout - loop->time;
+  if (diff > INT_MAX)
+    diff = INT_MAX;
+
+  return (int) diff;
+}
+----
+
+
+== 9.uv__run_closing_handles
+
+This function iterates over the list of close handlers and attempts to complete the close for each one. If the handler has a special close callback, then that callback is fired on finish.
+
+[source, c]
+----
+static void uv__run_closing_handles(uv_loop_t* loop) {
+  uv_handle_t* p;
+  uv_handle_t* q;
+
+  p = loop->closing_handles;
+  loop->closing_handles = NULL;
+
+  while (p) {
+    q = p->next_closing;
+    uv__finish_close(p);
+    p = q;
+  }
+}
+
+static void uv__finish_close(uv_handle_t* handle) {
+  uv_signal_t* sh;
+
+  /* Note: while the handle is in the UV_HANDLE_CLOSING state now, it's still
+   * possible for it to be active in the sense that uv__is_active() returns
+   * true.
+   *
+   * A good example is when the user calls uv_shutdown(), immediately followed
+   * by uv_close(). The handle is considered active at this point because the
+   * completion of the shutdown req is still pending.
+   */
+  assert(handle->flags & UV_HANDLE_CLOSING);
+  assert(!(handle->flags & UV_HANDLE_CLOSED));
+  handle->flags |= UV_HANDLE_CLOSED;
+
+  switch (handle->type) {
+    case UV_PREPARE:
+    case UV_CHECK:
+    case UV_IDLE:
+    case UV_ASYNC:
+    case UV_TIMER:
+    case UV_PROCESS:
+    case UV_FS_EVENT:
+    case UV_FS_POLL:
+    case UV_POLL:
+      break;
+
+    case UV_SIGNAL:
+      /* If there are any caught signals "trapped" in the signal pipe,
+       * we can't call the close callback yet. Reinserting the handle
+       * into the closing queue makes the event loop spin but that's
+       * okay because we only need to deliver the pending events.
+       */
+      sh = (uv_signal_t*) handle;
+      if (sh->caught_signals > sh->dispatched_signals) {
+        handle->flags ^= UV_HANDLE_CLOSED;
+        uv__make_close_pending(handle);  /* Back into the queue. */
+        return;
+      }
+      break;
+
+    case UV_NAMED_PIPE:
+    case UV_TCP:
+    case UV_TTY:
+      uv__stream_destroy((uv_stream_t*)handle);
+      break;
+
+    case UV_UDP:
+      uv__udp_finish_close((uv_udp_t*)handle);
+      break;
+
+    default:
+      assert(0);
+      break;
+  }
+
+  uv__handle_unref(handle);
+  QUEUE_REMOVE(&handle->handle_queue);
+
+  if (handle->close_cb) {
+    handle->close_cb(handle);
+  }
+}
+----
+
+
