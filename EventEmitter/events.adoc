@@ -1,0 +1,493 @@
+= Node's Events
+ifdef::env-github[]
+:tip-caption: :bulb:
+:note-caption: :bookmark:
+:important-caption: :boom:
+:caution-caption: :fire:
+:warning-caption: :warning:
+endif::[]
+
+= Event Emitter
+
+Much of node modules include architecture of event handling. Try to get one from stream(stream link):
+
+[source, js] 
+----
+import fs from 'fs';
+import http from 'http';
+
+const rs = fs.createReadStream('example.txt')
+const server = http.createServer().listen(8000);
+
+// .on() add listener for 'data' event of ReadStream class;
+rs.on('data', (chunk) => {
+  console.log(`Received ${chunk.length} bytes of data.`);
+});
+
+// .on() add listener for 'http' event of Server class; 
+server.on('connection', (stream) => {
+  console.log('someone connected!');
+});
+
+----
+
+
+====
+
+`Stream` and `Server` classes is instances of the `EventEmitter` class, so they are include methods of `EventEmitter` just like `.on()` that used for add listener function for the named event(in this example 'data' and 'connect' named events).
+
+====
+== Custom usage 
+
+Before emits any event, it must register functions(callbacks) to listen to the events. To emit event use `.emit('event')` method of `EventEmitter`.
+
+[source, js]
+----
+import {EventEmitter} from 'events'
+
+//1.create new instance of EventEmitter class
+const ee = new EventEmitter()
+
+const on_callback = ()=>{
+    console.log('on emitted');
+}
+
+const once_callback = () => {
+ 	console.log('once emitted');
+};
+
+//2.register on_callback function on 'on_event' event
+ee.on('on_event', on_callback);
+
+//2.register once_callback function on 'once_event' event
+ee.once('once_event', once_callback);
+
+
+//3.emit both events( function that registered with once will emit only one time, with on much times ee.emit('on_event') called)
+ee.emit('on_event')
+ee.emit('once_event')
+
+
+
+----
+====
+. Create `new EventEmitter(ee)`;
+. Register `on_callback` and `once_callback` to events `'on_event'` and `'once_event'`;
+. Emit both events;
+
+====
+
+
+To add listeners to beginning of listeners array use `.prependListener('event',cb)`( listener that will be executed before any of listeners):
+
+[source, js]
+----
+import {EventEmitter} from 'events'
+
+const ee = new EventEmitter()
+
+const on_callback = () => {
+    console.log('on emitted');
+}
+
+const once_callback = () => {
+    console.log('once emitted');
+};
+
+ee.on('on_event', on_callback);
+
+ee.once('once_event', once_callback);
+
+const prepend_on_callback = () => {
+    console.log('add listener to beginning of listeners array of emitter')
+}
+
+const prepend_once_callback = () => {
+    console.log('add listener to beginning of listeners array of emitter')
+}
+
+ee.prependListener('on_event', prepend_on_callback);
+
+ee.prependOnceListener('once_event', prepend_once_callback);
+
+
+ee.emit('on_event')
+ee.emit('once_event')
+----
+
+
+Get all listeners that registered on 'event':
+[source, js]
+----
+import { getEventListeners, EventEmitter } from 'events';
+
+{
+  const ee = new EventEmitter();
+  const listener = () => console.log('Events are fun');
+  ee.on('foo', listener);
+  getEventListeners(ee, 'foo'); // [listener]
+}
+{
+  const et = new EventTarget();
+  const listener = () => console.log('Events are dump');
+  et.addEventListener('foo', listener);
+  getEventListeners(et, 'foo'); // [listener]
+}
+----
+
+
+
+You can also pass arguments (like in normal functions) to emitter:
+
+[source, js]
+----
+import {EventEmitter} from 'events';
+
+const ee = new EventEmitter()
+
+ee.on('event', function(a, b) {
+  console.log(a, b, this, this === myEmitter);
+  // Prints:
+  //   a b MyEmitter {
+  //     _events: [Object: null prototype] { event: [Function (anonymous)] },
+  //     _eventsCount: 1,
+  //     _maxListeners: undefined,
+  //     [Symbol(kCapture)]: false
+  //   } true
+});
+
+ee.emit('event', 'a', 'b');
+----
+
+*Useful links:*
+====
+[start=1]
+. To create custom EventEmitter class with your own functionality look at this dir: https://github.com/HowProgrammingWorks/EventEmitter/tree/master/JavaScript
+. Events custom implementation module:
+https://github.com/browserify/events/blob/main/events.js
+. Events doc:
+https://nodejs.org/api/events.html
+. Events native node.js implementation:
+https://github.com/nodejs/node/blob/main/lib/events.js
+====
+
+
+=== Remove listeners
+
+To remove listener use `ee.off('event', listener)`(same as `ee.removeListener('event', listener)`) and `ee.removeAllListeners()` to remove all registered listeners:
+
+[source, js]
+----
+import {EventEmitter} from 'events'
+
+const ee = new EventEmitter()
+
+const on_callback = ()=>{
+    console.log('on emitted');
+}
+
+const once_callback = () => {
+ 	console.log('once emitted');
+};
+
+ee.on('on_event', on_callback);
+
+ee.once('once_event', once_callback);
+
+// remove on_callback listener on 'on_event' event
+ee.off('on_event',on_callback);
+
+ee.emit('on_event')
+ee.emit('once_event')
+
+//remove all registered listeners
+ee.removeAllListeners();
+
+ee.emit('on_event')
+ee.emit('once_event')
+
+----
+
+
+`off()`(`removeListener()`) or `removeAllListeners()` calls after emitting and before the last listener finishes execution will not remove them from `emit()` in progress:
+
+[source, js]
+----
+import { EventEmitter } from 'events'
+
+const ee = new EventEmitter();
+
+const callback_a = () => {
+  console.log('a');
+  ee.off('event', callback_b);
+};
+
+const callback_b = () => {
+  console.log('b');
+};
+
+ee.on('event', callback_a);
+
+ee.on('event', callback_b);
+
+// callback_a removes listener callbackB but it will still be called.
+// Internal listener array at time of emit [callback_a, callback_b]
+ee.emit('event');
+// Prints:
+//   a
+//   b
+
+// callback_b is now removed.
+// Internal listener array [callback_a]
+ee.emit('event');
+// Prints:
+//   a
+
+----
+
+=== Special Events
+
+
+All EventEmitter instances emit the event `‘newListener’` when new listeners are added and `‘removeListener’` existing listeners are removed from listeners array.
+
+
+[source, js]
+----
+import { EventEmitter } from 'events';
+
+const ee = new EventEmitter()
+
+const on_callback = () => {
+    console.log('on_event emitted');
+}
+
+ee.once('newListener', (event, listener) => {
+    console.log(`The listener is added to ${event}`);
+});
+
+ee.on('on_event', on_callback);
+
+ee.once('removeListener', (event, listener) => {
+    console.log(`The listener is removed from ${event}`);
+});
+
+ee.removeListener('on_event',on_callback)
+----
+
+
+=== Error Events
+
+
+To prevent crush of node process on error emitting, you can register listener to `'error'` event (just like `catch(e)` in `try...catch`):
+
+[source, js]
+----
+import { EventEmitter } from 'events'
+
+const ee = new EventEmitter()
+
+ee.on('error', (err) => {
+    console.error('whoops! there was an error');
+});
+ee.emit('error', new Error('whoops!'));
+----
+
+Log wanted info without consuming the emitted error:
+
+[source, js] 
+----
+
+import { EventEmitter, errorMonitor } from 'events'
+
+const ee = new EventEmitter()
+
+ee.on(errorMonitor, (err) => {
+    console.log(err);
+  });
+
+
+ee.emit('error', new Error('whoops!'));
+----
+
+== Async Events
+
+Listener functions can switch to an asynchronous mode of operation using the `setImmediate()` or `process.nextTick()` (process link) methods:
+
+[source, js]
+----
+import {EventEmitter} from 'events'
+
+const ee = new EventEmitter()
+
+ee.on('event', (a, b) => {
+  setImmediate(() => {
+    console.log('this happens asynchronously');
+  });
+});
+ee.emit('event', 'a', 'b');
+----
+
+=== Promised `.on()`
+
+[source, js]
+----
+import { on, EventEmitter } from 'events';
+import process from 'process';
+
+const ee = new EventEmitter();
+
+// Emit later on
+process.nextTick(() => {
+  ee.emit('foo', 'bar');
+  ee.emit('foo', 42);
+});
+
+for await (const event of on(ee, 'foo')) {
+  // The execution of this inner block is synchronous and it
+  // processes one event at a time (even with await). Do not use
+  // if concurrent execution is required.
+  console.log(event); // prints ['bar'] [42]
+}
+// Unreachable here
+----
+
+=== Promised `.once()`
+
+[source, js]
+----
+import { once, EventEmitter } from 'events';
+import process from 'node:process';
+
+const ee = new EventEmitter();
+
+process.nextTick(() => {
+  ee.emit('myevent', 42);
+});
+
+const [value] = await once(ee, 'myevent');
+console.log(value);
+
+const err = new Error('kaboom');
+process.nextTick(() => {
+  ee.emit('error', err);
+});
+
+try {
+  await once(ee, 'myevent');
+} catch (err) {
+  console.error('error happened', err);
+}
+----
+
+==== Once can miss events because of synchronously nature of events:
+
+[source, js]
+----
+import { EventEmitter, once } from 'events';
+import process from 'process';
+
+const ee = new EventEmitter();
+
+async function foo() {
+  await once(ee, 'bar');
+  console.log('bar');
+
+  // This Promise will never resolve because the 'foo' event will
+  // have already been emitted before the Promise is created.
+  await once(ee, 'foo');
+  console.log('foo');
+}
+
+process.nextTick(() => {
+  ee.emit('bar');
+  ee.emit('foo');
+});
+
+foo().then(() => console.log('done'));
+----
+
+==== To catch all events, create promises before awaiting them, then use `Promise.all()`.
+
+[source, js]
+----
+import { EventEmitter, once } from 'events';
+import process from 'process';
+
+const ee = new EventEmitter();
+
+async function foo() {
+  await Promise.all([once(ee, 'bar'), once(ee, 'foo')]);
+  console.log('foo', 'bar');
+}
+
+process.nextTick(() => {
+  ee.emit('bar');
+  ee.emit('foo');
+});
+
+foo().then(() => console.log('done'));
+----
+
+
+== Examples
+
+Catch error from readable stream(stream link): 
+[source, js] 
+----
+import fs from 'fs';
+
+const rs = fs.createReadStream('not_existed_file_path.txt')
+
+rs.on('error',(err) => {
+    console.log(err)
+});
+
+
+console.log('node process is not exit')
+----
+
+Catch error from http request(http link):
+[sourcse, js]
+----
+import http from 'http'
+
+const options = {
+  hostname: 'localhost',
+  port: 80,
+  path: '/',
+};
+
+const req = http.request(options);
+
+req.on('error', (e) => {
+  console.error(`problem with request: ${e.message}`);
+});
+
+req.end();
+----
+=== capture Rejections on promises
+
+The `'error'` events that are generated by the captureRejections behavior do not have a catch handler to avoid infinite error loops: the recommendation is *to not use async functions* as `'error'` event handlers. Using async functions with event handlers is problematic, because it can lead to an unhandled rejection in case of a thrown exception.
+
+[source, js]
+----
+import { EventEmitter } from 'events'
+
+const ee1 = new EventEmitter({ captureRejections: true });
+ee1.on('event', async (value) => {
+  throw new Error('kaboom');
+});
+
+ee1.on('error', console.log);
+
+ee1.emit('event')
+
+const ee2 = new EventEmitter({ captureRejections: true });
+ee2.on('event', async (value) => {
+  throw new Error('kaboom');
+});
+
+ee2[Symbol.for('nodejs.rejection')] = console.log;
+
+ee2.emit('event')
+----
